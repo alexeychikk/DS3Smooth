@@ -70,13 +70,17 @@ void DlaaLoadSettings(const wchar_t* ini)
         CreateDirectoryW(dir, NULL);
         swprintf_s(dir, L"%scapture", g_dlaaDir);
         CreateDirectoryW(dir, NULL);
-        Log("DLAA capture on: shaders are saved, F9 captures a frame.");
     }
 }
 
 bool DlaaEnabled()
 {
     return g_dlaa || g_capture;
+}
+
+bool DlaaDebug()
+{
+    return g_dump || g_capture;
 }
 
 // ---- NGX (DLSS) through the driver's _nvngx.dll ----
@@ -516,7 +520,7 @@ static const char MotionVectorShader[] =
     "    float g_useCamera;\n"
     "    float g_useObjects;\n"
     "    float2 g_last; // last pixel the scene was rendered to (the far edges are missing with negative jitter)\n"
-    "    float g_pad;\n"
+    "    float g_measure; // fill g_stats (debugging only)\n"
     "};\n"
     "[numthreads(8, 8, 1)]\n"
     "void main(uint2 id : SV_DispatchThreadID)\n"
@@ -539,12 +543,13 @@ static const char MotionVectorShader[] =
     "    bool4 bad = (asuint(c) & 0x7f800000) == 0x7f800000; // exponent all ones: NaN or infinity\n"
     "    if (any(bad))\n"
     "    {\n"
-    "        InterlockedAdd(g_stats[0], 1);\n"
+    "        if (g_measure > 0) InterlockedAdd(g_stats[0], 1);\n"
     "        c = bad ? 0 : c;\n"
     "    }\n"
     "    c.rgb = clamp(c.rgb, 0, 65504);\n"
     "    g_colorOut[id] = c;\n"
-    "    if (((id.x | id.y) & 15) == 0) InterlockedAdd(g_stats[1], (uint)(min(dot(c.rgb, float3(0.2126, 0.7152, 0.0722)), 1000) * 64));\n"
+    "    if (g_measure > 0 && ((id.x | id.y) & 15) == 0)\n"
+    "        InterlockedAdd(g_stats[1], (uint)(min(dot(c.rgb, float3(0.2126, 0.7152, 0.0722)), 1000) * 64));\n"
     "}\n";
 
 // The brightness of DLSS's output on the same sample grid, for CheckStats.
@@ -567,7 +572,7 @@ static const UINT StatsStep = 16, StatsScale = 64;
 struct MotionVectorParams
 {
     float reproject[16];
-    float size[2], objectScale, useCamera, useObjects, last[2], pad;
+    float size[2], objectScale, useCamera, useObjects, last[2], measure;
 };
 
 // The game's velocity shaders write saturate((current - previous) * scale * 0.5 + 0.5), scale from
@@ -1081,14 +1086,18 @@ static void RunMotionVectorPass(ID3D11DeviceContext* c, float jx, float jy)
     p.useObjects = g_execVelocity ? 1.0f : 0.0f;
     p.last[0] = (float)(g_res.width - (jx < 0 ? 2 : 1));
     p.last[1] = (float)(g_res.height - (jy < 0 ? 2 : 1));
+    p.measure = g_dump ? 1.0f : 0.0f;
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(REAL(c, CtxMap, Map_t)(c, g_res.mvParams, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
     {
         memcpy(m.pData, &p, sizeof(p));
         REAL(c, CtxUnmap, Unmap_t)(c, g_res.mvParams, 0);
     }
-    static const UINT zero[4] = {};
-    c->ClearUnorderedAccessViewUint(g_res.statsUav, zero);
+    if (g_dump)
+    {
+        static const UINT zero[4] = {};
+        c->ClearUnorderedAccessViewUint(g_res.statsUav, zero);
+    }
     ID3D11ShaderResourceView* srvs[3] = { g_res.mainDepthSrv, g_res.objectsSrv, g_res.sceneSrv };
     ID3D11UnorderedAccessView* uavs[4] = { g_res.mvUav, g_res.depthUav, g_res.colorUav, g_res.statsUav };
     c->CSSetShader(g_res.mvShader, NULL, 0);
@@ -1945,6 +1954,7 @@ void DlaaOnDeviceCreated(ID3D11Device* device)
     g_immediate->Release(); // the device keeps it alive
     HookContext(g_immediate, NULL);
     Log("DLAA: context hooks installed.");
+    if (g_capture) Log("DLAA capture on: shaders are saved, F9 captures a frame.");
 }
 
 static void StartDlaa(IDXGISwapChain* swapChain)

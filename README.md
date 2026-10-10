@@ -50,6 +50,8 @@ The keyboard icons match one particular key layout (set in `keyicons\make_icons.
 - RTSS works alongside; set `fps` at or above the RTSS limit.
 - At 4K the game window covers the small DS3Smooth window, so it may look like it closed.
 - Windows Defender may warn about `DS3Smooth.exe`, because it changes another program's memory.
+- Something not working (no DLAA, no icons)? Set `log = 1` in `DS3MouseFix.ini`; the game folder's
+  `DS3MouseFix.log` then says what was loaded and what failed.
 - It doesn't change gameplay, but any mod carries some risk online. Use at your own risk.
 
 ## Building

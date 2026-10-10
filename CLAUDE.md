@@ -91,7 +91,11 @@ Offsets and the No Logo patch come from SilkySouls3; the sprint fix comes from D
 
 Proxy `dinput8.dll`: forwards `DirectInput8Create` (the game's only dinput8 import) to the System32
 DLL. Settings come from `DS3MouseFix.ini`, section `[DS3MouseFix]`. A setup thread subclasses the
-game window, re-checking every 2 s in case the game recreates it.
+game window, re-checking every 2 s in case the game recreates it. `DS3MouseFix.log` is written only
+with `log = 1` (default 0, added 2026-10-10) or any developer setting (`dump_textures`, `stall_trace`,
+`dlaa_capture`, `dlaa_dump`); with those off no debugging code runs per frame (the stall tracer's
+Present timestamp and DLAA's brightness check are gated too). Ask the user for `log = 1` when a run's
+log is needed.
 
 - **Mouse throttle** (`interval_ms`, default 8, 0–50, 0 = off). Measured cause: in menus the game's
   wndproc spends ~1.25 ms each on `WM_SETCURSOR` and `WM_MOUSEMOVE` (~0.02 ms in gameplay), so with
@@ -217,7 +221,7 @@ source and ships its own binaries). Settings: `dlaa` (1), `dlaa_dump` (0), `dlaa
   without DLSS ("scene copy not seen") every ~20 s, unexplained, with nothing visible.
 - **Release state:** all debugging is behind ini flags that are off: `dlaa_dump` (also gates F10, NGX's
   own ~800-line log, the GPU depth readback, periodic log lines, the output brightness check and the
-  frames-without-DLSS lines), `dlaa_capture` (F9). The log is
+  frames-without-DLSS lines), `dlaa_capture` (F9). Plain logging is `log` (off). The log is
   deleted at startup once it passes 1 MB. The game's `DS3DLAA\` holds only `nvngx_dlss.dll`; the
   shader set for `ds3sim` is regenerated with `dlaa_capture = 1` (saved to `DS3DLAA\shaders\`).
 - **Tools:** `dlaa_capture = 1` saves shaders to `DS3DLAA\shaders\` and F9 (or `capture.trigger`)

@@ -26,6 +26,9 @@
 //
 // DLAA (dlaa.cpp): NVIDIA DLSS anti-aliasing at native resolution; see the comment at the top of dlaa.cpp.
 //
+// DS3MouseFix.log is only written with log = 1 or a developer setting (dump_textures, stall_trace,
+// dlaa_capture, dlaa_dump); with those off, no debugging code runs per frame.
+//
 // The DLL is only a carrier: it forwards DirectInput8Create to the real System32 dinput8.dll.
 
 #include "shared.h"
@@ -42,6 +45,7 @@
 static int g_intervalMs = 8; // minimum time between mouse messages passed to the game, 0 = off
 static bool g_keyboardIcons = true; // replace the textures found in the DS3KeyIcons folder
 static bool g_dumpTextures;         // save every texture created with initial data to the texture_dump folder
+static bool g_log;                  // write DS3MouseFix.log (log = 1, or any developer setting)
 wchar_t g_dllDir[MAX_PATH];         // ends with a backslash
 static LARGE_INTEGER g_qpcFreq;
 
@@ -55,10 +59,11 @@ extern "C" HRESULT WINAPI DirectInput8Create(HINSTANCE instance, DWORD version, 
     return g_realCreate ? g_realCreate(instance, version, riid, out, outer) : E_FAIL;
 }
 
-// ---- Log (DS3MouseFix.log next to the DLL) ----
+// ---- Log (DS3MouseFix.log next to the DLL; off unless log = 1 or a developer setting is on) ----
 
 void Log(const char* format, ...)
 {
+    if (!g_log) return;
     wchar_t path[MAX_PATH];
     swprintf_s(path, L"%sDS3MouseFix.log", g_dllDir);
     FILE* f;
@@ -412,10 +417,13 @@ static HRESULT STDMETHODCALLTYPE HookedPresent(IDXGISwapChain* swapChain, UINT s
     if (DlaaEnabled()) DlaaOnPresent(swapChain);
     HRESULT hr = g_realPresent(swapChain, syncInterval, flags);
     if (DlaaEnabled()) DlaaAfterPresent();
-    LARGE_INTEGER now;
-    QueryPerformanceCounter(&now);
-    g_presentThread = GetCurrentThreadId();
-    InterlockedExchange64(&g_lastPresentQpc, now.QuadPart);
+    if (g_stallTrace)
+    {
+        LARGE_INTEGER now;
+        QueryPerformanceCounter(&now);
+        g_presentThread = GetCurrentThreadId();
+        InterlockedExchange64(&g_lastPresentQpc, now.QuadPart);
+    }
     return hr;
 }
 
@@ -791,6 +799,8 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     g_dumpTextures = GetPrivateProfileIntW(L"DS3MouseFix", L"dump_textures", 0, ini) != 0;
     g_stallTrace = GetPrivateProfileIntW(L"DS3MouseFix", L"stall_trace", 0, ini) != 0;
     DlaaLoadSettings(ini);
+    // The developer settings exist to write to the log, so they turn it on too.
+    g_log = GetPrivateProfileIntW(L"DS3MouseFix", L"log", 0, ini) != 0 || g_dumpTextures || g_stallTrace || DlaaDebug();
 
     // Must run before the game's entry point; dearxan hooks it and reports back through the callback.
     if (GetPrivateProfileIntW(L"DS3MouseFix", L"disable_arxan", 1, ini) != 0)

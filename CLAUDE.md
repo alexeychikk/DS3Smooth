@@ -191,7 +191,10 @@ source and ships its own binaries). Settings: `dlaa` (1), `dlaa_dump` (0), `dlaa
   vtable (patch each; deferred contexts via `CreateDeferredContext`, entry 27); d3d11 rewrites the
   immediate context's draw/dispatch/copy/clear entries on `Flush` and again on the first draw after it
   (re-hook after every call on the immediate context); command list addresses are reused (look up
-  newest first). DS3 uses 17 worker contexts and the immediate one.
+  newest first). DS3 uses 17 worker contexts and the immediate one. The GPU clips to the viewport
+  rounded down to whole pixels: any negative TopLeft (even -0.05) leaves the target's last column/row
+  unrendered, so with negative jitter the scene's right/bottom edge is missing (a flickering line at
+  the bottom, reported 2026-10-10); `FillMissingEdges` copies the neighbour in before DLSS.
 - **How it works:** viewport jitter (Halton 2,3, 8 phases) on scene geometry only; the game's velocity
   draws redrawn into a full-res R32G32_FLOAT target (scale 1/16 in b7, read-only scene depth,
   LESS_EQUAL, small negative depth bias); a compute pass makes motion vectors (camera from depth +
@@ -203,8 +206,18 @@ source and ships its own binaries). Settings: `dlaa` (1), `dlaa_dump` (0), `dlaa
   saw no ghosting and liked the look. After the camera fix, verified from dumps: warping with the motion
   vectors matches the next frame ~3x better than not warping, and the jitter sign is right (the color
   input is offset from DLSS's output in the jitter's direction). The user confirmed it looks good.
+- **Black flashes (reported 2026-10-10, not seen since):** a few black frames, twice, while talking to
+  an NPC, and once after a warp; DLSS ran every frame then. DLSS's colour input is now a cleaned copy
+  of the scene (NaN/inf replaced), but `ds3sim ... nan` showed DLSS tolerates a NaN and an inf pixel
+  anyway, so that's probably not the cause. With `dlaa_dump = 1`, each frame the brightness of input vs
+  output is compared on a 1/16 grid (read back without waiting); a dark or invalid output logs "OUTPUT
+  BROKEN" and the first one per session saves a dump (`DS3DLAA\dump\`, ~500 MB). Warps show ~250
+  frames without DLSS (loading fade, "scene copy seen, never read"), which is harmless. Next run
+  (22:35, NPCs + warp): no flashes seen, nothing broken logged, no invalid input pixels; single frames
+  without DLSS ("scene copy not seen") every ~20 s, unexplained, with nothing visible.
 - **Release state:** all debugging is behind ini flags that are off: `dlaa_dump` (also gates F10, NGX's
-  own ~800-line log, the GPU depth readback and periodic log lines), `dlaa_capture` (F9). The log is
+  own ~800-line log, the GPU depth readback, periodic log lines, the output brightness check and the
+  frames-without-DLSS lines), `dlaa_capture` (F9). The log is
   deleted at startup once it passes 1 MB. The game's `DS3DLAA\` holds only `nvngx_dlss.dll`; the
   shader set for `ds3sim` is regenerated with `dlaa_capture = 1` (saved to `DS3DLAA\shaders\`).
 - **Tools:** `dlaa_capture = 1` saves shaders to `DS3DLAA\shaders\` and F9 (or `capture.trigger`)

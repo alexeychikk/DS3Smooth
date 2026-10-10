@@ -1,7 +1,8 @@
 // Simulates the parts of a DS3 frame that DLAA hooks into, using the game's own shader bytecode (saved
 // by dlaa_capture = 1), so the DLL recognizes the same shaders and runs its whole DLSS path offline.
 //
-// usage: ds3sim <dir with dinput8.dll> <dir with the game's shaders> [frames]
+// usage: ds3sim <dir with dinput8.dll> <dir with the game's shaders> [frames] [nan]
+// ("nan": from frame 590 the scene gets a NaN and an infinite pixel, to test DLAA's colour cleaning)
 //
 // Per frame: a worker (deferred) context clears the scene depth (depth + stencil), writes cbSceneParam
 // (VS b8) and draws "world" geometry into a 6-target G-buffer; a second worker clears the game's
@@ -16,6 +17,7 @@
 #include <d3dcompiler.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #pragma comment(lib, "d3d11.lib")
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
@@ -95,8 +97,9 @@ static ID3D11Buffer* DynamicCb(ID3D11Device* dev, UINT size)
 
 int main(int argc, char** argv)
 {
-    if (argc < 3) { printf("usage: ds3sim <dll dir> <shader dir> [frames]\n"); return 1; }
+    if (argc < 3) { printf("usage: ds3sim <dll dir> <shader dir> [frames] [nan]\n"); return 1; }
     int frames = argc > 3 ? atoi(argv[3]) : 620;
+    bool nan = argc > 4 && strcmp(argv[4], "nan") == 0;
     char dll[MAX_PATH];
     sprintf_s(dll, "%s\\dinput8.dll", argv[1]);
     if (!LoadLibraryA(dll)) { printf("LoadLibrary failed %lu\n", GetLastError()); return 1; }
@@ -272,6 +275,16 @@ int main(int argc, char** argv)
         imm->PSSetShader(psSceneCopy, nullptr, 0);
         imm->PSSetShaderResources(0, 1, &sceneSrv);
         imm->Draw(4, 0); // scene copy: DLAA notes its target
+        if (nan && frame >= 590)
+        {
+            // One NaN and one infinite pixel, as a game shader can produce (a black flash with DLSS's auto exposure).
+            static const UINT16 bad[2][4] = { { 0x7E00, 0x7E00, 0x7E00, 0x3C00 }, { 0x7C00, 0x7C00, 0x7C00, 0x3C00 } };
+            for (int i = 0; i < 2; i++)
+            {
+                D3D11_BOX box = { 100u + 100u * i, 100, 0, 101u + 100u * i, 101, 1 };
+                imm->UpdateSubresource(yebis, 0, &box, bad[i], 8, 8);
+            }
+        }
         imm->OMSetRenderTargets(1, &halfRtv, nullptr);
         imm->RSSetViewports(1, &halfVp);
         imm->VSSetShader(vsYebis, nullptr, 0);

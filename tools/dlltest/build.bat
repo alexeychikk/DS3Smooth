@@ -1,7 +1,7 @@
 @echo off
 rem Builds the D3D11 test programs for DS3MouseFix's hooks into tools\dlltest\bin\.
 rem   dlltest.exe <dir with dinput8.dll>                 - deferred contexts, Flush, F9 capture
-rem   ds3sim.exe <dir with dinput8.dll> <shader dir> [n]  - a DS3-like frame with the game's own shaders (DLAA)
+rem   ds3sim.exe <dir with dinput8.dll> <shader dir> [n] [nan] - a DS3-like frame with the game's own shaders (DLAA)
 setlocal
 cd /d "%~dp0"
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"

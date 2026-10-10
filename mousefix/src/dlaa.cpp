@@ -5,7 +5,8 @@
 //
 // - Jitter: the 3D scene draws (G-buffer, decals, transparents, particles; full and half resolution)
 //   get their viewport shifted by a sub-pixel Halton(2,3) offset, a new one each frame. Shadow maps,
-//   full-screen passes, light volumes (read-only depth) and the HUD are left alone.
+//   full-screen passes, light volumes (read-only depth) and the HUD are left alone. With a negative
+//   offset the GPU skips the last column/row, so that edge is filled from its neighbour before DLSS.
 // - Object motion: DS3 draws moving objects (characters, enemies, cloth, physics objects) into a
 //   half-resolution 8-bit velocity target for its motion blur; only when Motion Blur is on. Each of
 //   those draws is drawn a second time into our full-resolution R32G32_FLOAT target, depth-tested
@@ -17,7 +18,8 @@
 //   view-projection is camera-relative but the inverse gives absolute positions, so the camera's move
 //   is accounted for in one reprojection matrix (BuildReprojection).
 // - DLSS runs on the immediate context on the HDR scene, just before YEBIS (the post-effects middleware)
-//   starts glare and tonemapping, so the HUD is drawn on top of the result. YEBIS's motion blur and
+//   starts glare and tonemapping, so the HUD is drawn on top of the result. Its colour input is a copy
+//   of the scene with NaN/infinite values replaced. YEBIS's motion blur and
 //   the game's FXAA are skipped while DLSS is active.
 // - DS3 records almost everything on worker threads (deferred contexts), so per-frame data (jitter
 //   frame, camera, velocity pass) is attached to command lists and picked up when the immediate context
@@ -29,7 +31,8 @@
 //
 // dlaa_dump = 1 (debugging) saves two consecutive frames of DLSS inputs and output to DS3DLAA\dump\
 // after ~5 s and on F10, so motion vectors and jitter can be checked offline (tools\check_dump.py); it
-// also turns on NGX's own log and extra DLAA log lines. With it off, F10 does nothing.
+// also turns on NGX's own log and extra DLAA log lines: frames drawn without DLSS, and a per-frame
+// check of DLSS's output (logged and dumped when it comes out dark). With it off, F10 does nothing.
 // Verified in game 2026-10-10: camera and object motion vectors (warped frame matches 3x better) and
 // the jitter sign (the input is offset from DLSS's output by the jitter, same direction).
 
@@ -494,11 +497,17 @@ typedef HRESULT(WINAPI* D3DCompile_t)(LPCVOID, SIZE_T, LPCSTR, const D3D_SHADER_
                                       ID3DBlob**);
 
 // Motion vectors for DLSS: pixel units, pointing from the current pixel to where it was last frame.
+// The same pass makes DLSS's colour input: the scene with NaN/infinite values replaced (one such pixel
+// can blank DLSS's auto exposure for frames) and the missing edges filled (FillMissingEdges). Every
+// 16th pixel in each direction is added up in g_stats for the brightness check (CheckStats).
 static const char MotionVectorShader[] =
     "Texture2D<float> g_depth : register(t0);\n"
     "Texture2D<float2> g_objects : register(t1);\n"
+    "Texture2D<float4> g_color : register(t2);\n"
     "RWTexture2D<float2> g_mv : register(u0);\n"
     "RWTexture2D<float> g_depthOut : register(u1);\n"
+    "RWTexture2D<float4> g_colorOut : register(u2);\n"
+    "RWStructuredBuffer<uint> g_stats : register(u3); // non-finite input pixels, input brightness sum\n"
     "cbuffer Params : register(b0)\n"
     "{\n"
     "    row_major float4x4 g_reproject; // current NDC + depth -> previous clip position\n"
@@ -506,17 +515,19 @@ static const char MotionVectorShader[] =
     "    float g_objectScale;\n"
     "    float g_useCamera;\n"
     "    float g_useObjects;\n"
-    "    float3 g_pad;\n"
+    "    float2 g_last; // last pixel the scene was rendered to (the far edges are missing with negative jitter)\n"
+    "    float g_pad;\n"
     "};\n"
     "[numthreads(8, 8, 1)]\n"
     "void main(uint2 id : SV_DispatchThreadID)\n"
     "{\n"
     "    if (id.x >= (uint)g_size.x || id.y >= (uint)g_size.y) return;\n"
-    "    float z = g_depth[id];\n"
+    "    uint2 src = min(id, (uint2)g_last);\n"
+    "    float z = g_depth[src];\n"
     "    g_depthOut[id] = z;\n"
     "    float2 ndc = float2((id.x + 0.5) / g_size.x * 2 - 1, 1 - (id.y + 0.5) / g_size.y * 2);\n"
     "    float2 delta = 0; // previous minus current position, NDC\n"
-    "    float2 o = g_useObjects > 0 ? g_objects[id] : float2(-1, -1);\n"
+    "    float2 o = g_useObjects > 0 ? g_objects[src] : float2(-1, -1);\n"
     "    if (o.x >= 0) delta = -(o - 0.5) * g_objectScale; // the game's velocity: current minus previous\n"
     "    else if (g_useCamera > 0)\n"
     "    {\n"
@@ -524,12 +535,39 @@ static const char MotionVectorShader[] =
     "        if (prev.w > 1e-6) delta = prev.xy / prev.w - ndc;\n"
     "    }\n"
     "    g_mv[id] = float2(delta.x * 0.5 * g_size.x, -delta.y * 0.5 * g_size.y);\n"
+    "    float4 c = g_color[src];\n"
+    "    bool4 bad = (asuint(c) & 0x7f800000) == 0x7f800000; // exponent all ones: NaN or infinity\n"
+    "    if (any(bad))\n"
+    "    {\n"
+    "        InterlockedAdd(g_stats[0], 1);\n"
+    "        c = bad ? 0 : c;\n"
+    "    }\n"
+    "    c.rgb = clamp(c.rgb, 0, 65504);\n"
+    "    g_colorOut[id] = c;\n"
+    "    if (((id.x | id.y) & 15) == 0) InterlockedAdd(g_stats[1], (uint)(min(dot(c.rgb, float3(0.2126, 0.7152, 0.0722)), 1000) * 64));\n"
     "}\n";
+
+// The brightness of DLSS's output on the same sample grid, for CheckStats.
+static const char OutputStatsShader[] =
+    "Texture2D<float4> g_output : register(t0);\n"
+    "RWStructuredBuffer<uint> g_stats : register(u0); // [2] output brightness sum, [3] non-finite output pixels\n"
+    "[numthreads(8, 8, 1)]\n"
+    "void main(uint2 id : SV_DispatchThreadID)\n"
+    "{\n"
+    "    uint w, h;\n"
+    "    g_output.GetDimensions(w, h);\n"
+    "    uint2 p = id * 16;\n"
+    "    if (p.x >= w || p.y >= h) return;\n"
+    "    float4 c = g_output[p];\n"
+    "    if (any((asuint(c) & 0x7f800000) == 0x7f800000)) InterlockedAdd(g_stats[3], 1);\n"
+    "    else InterlockedAdd(g_stats[2], (uint)(clamp(dot(c.rgb, float3(0.2126, 0.7152, 0.0722)), 0, 1000) * 64));\n"
+    "}\n";
+static const UINT StatsStep = 16, StatsScale = 64;
 
 struct MotionVectorParams
 {
     float reproject[16];
-    float size[2], objectScale, useCamera, useObjects, pad[3];
+    float size[2], objectScale, useCamera, useObjects, last[2], pad;
 };
 
 // The game's velocity shaders write saturate((current - previous) * scale * 0.5 + 0.5), scale from
@@ -548,14 +586,32 @@ static struct
     ID3D11UnorderedAccessView* depthUav;
     ID3D11Texture2D* output;            // DLSS output, same format as the scene
     DXGI_FORMAT outputFormat;
+    ID3D11ShaderResourceView* outputSrv;
+    ID3D11Texture2D* color;             // DLSS colour input: the scene, cleaned (R16G16B16A16_FLOAT)
+    ID3D11UnorderedAccessView* colorUav;
     ID3D11ShaderResourceView* mainDepthSrv;
     ID3D11Resource* mainDepthSrvOf;
+    ID3D11ShaderResourceView* sceneSrv;
+    ID3D11Resource* sceneSrvOf;
     ID3D11ComputeShader* mvShader;
+    ID3D11ComputeShader* statsShader;
+    ID3D11Buffer* stats;                // 4 counters, see the shaders
+    ID3D11UnorderedAccessView* statsUav;
     ID3D11Buffer* mvParams;
     ID3D11Buffer* velocityScale;        // stands in for cbModelParam during our velocity draws
     ID3D11DepthStencilState* velocityDepth;
     ID3DDeviceContextState* state;      // a clean pipeline state to do our work in
 } g_res;
+
+// The brightness counters of recent frames, read back a few frames later so the CPU never waits.
+static struct
+{
+    ID3D11Buffer* buffer;               // staging copy of g_res.stats
+    bool pending;
+    int evaluation;
+    bool reset;
+} g_statsReadback[4];
+static int g_statsNext;
 
 static struct
 {
@@ -570,6 +626,20 @@ template <class T> static void SafeRelease(T*& p)
     p = NULL;
 }
 
+static HRESULT CompileComputeShader(D3DCompile_t compile, const char* source, size_t size, const char* name, ID3D11ComputeShader** out)
+{
+    ID3DBlob *code = NULL, *errors = NULL;
+    HRESULT hr = compile(source, size, name, NULL, NULL, "main", "cs_5_0", D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
+    if (FAILED(hr)) Log("DLAA: %s shader: %s", name, errors ? (const char*)errors->GetBufferPointer() : "compile failed");
+    else
+    {
+        hr = g_device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, out);
+        code->Release();
+    }
+    SafeRelease(errors);
+    return hr;
+}
+
 static bool CreateStaticResources()
 {
     HMODULE compiler = LoadLibraryW(L"d3dcompiler_47.dll");
@@ -579,20 +649,23 @@ static bool CreateStaticResources()
         Log("DLAA: d3dcompiler_47.dll not found.");
         return false;
     }
-    ID3DBlob *code = NULL, *errors = NULL;
-    HRESULT hr = compile(MotionVectorShader, sizeof(MotionVectorShader) - 1, "dlaa_mv", NULL, NULL, "main", "cs_5_0",
-                         D3DCOMPILE_OPTIMIZATION_LEVEL3, 0, &code, &errors);
-    if (FAILED(hr))
-    {
-        Log("DLAA: motion vector shader: %s", errors ? (const char*)errors->GetBufferPointer() : "compile failed");
-        SafeRelease(errors);
-        return false;
-    }
-    hr = g_device->CreateComputeShader(code->GetBufferPointer(), code->GetBufferSize(), NULL, &g_res.mvShader);
-    code->Release();
-    SafeRelease(errors);
+    HRESULT hr = CompileComputeShader(compile, MotionVectorShader, sizeof(MotionVectorShader) - 1, "dlaa_mv", &g_res.mvShader);
+    if (SUCCEEDED(hr)) hr = CompileComputeShader(compile, OutputStatsShader, sizeof(OutputStatsShader) - 1, "dlaa_stats", &g_res.statsShader);
+    if (FAILED(hr)) return false;
 
     D3D11_BUFFER_DESC bd = {};
+    bd.ByteWidth = 4 * sizeof(UINT);
+    bd.BindFlags = D3D11_BIND_UNORDERED_ACCESS;
+    bd.MiscFlags = D3D11_RESOURCE_MISC_BUFFER_STRUCTURED;
+    bd.StructureByteStride = sizeof(UINT);
+    hr = g_device->CreateBuffer(&bd, NULL, &g_res.stats);
+    if (SUCCEEDED(hr)) hr = g_device->CreateUnorderedAccessView(g_res.stats, NULL, &g_res.statsUav);
+    bd.Usage = D3D11_USAGE_STAGING;
+    bd.BindFlags = 0;
+    bd.CPUAccessFlags = D3D11_CPU_ACCESS_READ;
+    for (int i = 0; i < (int)_countof(g_statsReadback) && SUCCEEDED(hr); i++) hr = g_device->CreateBuffer(&bd, NULL, &g_statsReadback[i].buffer);
+
+    bd = D3D11_BUFFER_DESC{};
     bd.ByteWidth = sizeof(MotionVectorParams);
     bd.Usage = D3D11_USAGE_DYNAMIC;
     bd.BindFlags = D3D11_BIND_CONSTANT_BUFFER;
@@ -656,6 +729,20 @@ static void CreateObjectTarget(UINT w, UINT h)
     g_res.objectsRtv = objectsRtv;
 }
 
+static DXGI_FORMAT DumpFormat(DXGI_FORMAT f);
+
+// A shader view of a texture that may be typeless (the game's HDR scene is R16G16B16A16_TYPELESS).
+static ID3D11ShaderResourceView* TypedSrv(ID3D11Resource* tex, DXGI_FORMAT format)
+{
+    D3D11_SHADER_RESOURCE_VIEW_DESC vd = {};
+    vd.Format = DumpFormat(format);
+    vd.ViewDimension = D3D11_SRV_DIMENSION_TEXTURE2D;
+    vd.Texture2D.MipLevels = 1;
+    ID3D11ShaderResourceView* srv = NULL;
+    if (FAILED(g_device->CreateShaderResourceView(tex, &vd, &srv))) return NULL;
+    return srv;
+}
+
 static bool CreateSceneResources(UINT w, UINT h, DXGI_FORMAT sceneFormat)
 {
     if (g_res.width == w && g_res.height == h && g_res.output && g_res.outputFormat == sceneFormat) return true;
@@ -664,16 +751,22 @@ static bool CreateSceneResources(UINT w, UINT h, DXGI_FORMAT sceneFormat)
     SafeRelease(g_res.mv);
     SafeRelease(g_res.depthUav);
     SafeRelease(g_res.depth);
+    SafeRelease(g_res.outputSrv);
     SafeRelease(g_res.output);
+    SafeRelease(g_res.colorUav);
+    SafeRelease(g_res.color);
     g_res.mv = CreateTexture(w, h, DXGI_FORMAT_R16G16_FLOAT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
     g_res.depth = CreateTexture(w, h, DXGI_FORMAT_R32_FLOAT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
     g_res.output = CreateTexture(w, h, sceneFormat, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
+    g_res.color = CreateTexture(w, h, DXGI_FORMAT_R16G16B16A16_FLOAT, D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE);
     if (g_res.mv) g_device->CreateUnorderedAccessView(g_res.mv, NULL, &g_res.mvUav);
     if (g_res.depth) g_device->CreateUnorderedAccessView(g_res.depth, NULL, &g_res.depthUav);
+    if (g_res.color) g_device->CreateUnorderedAccessView(g_res.color, NULL, &g_res.colorUav);
+    if (g_res.output) g_res.outputSrv = TypedSrv(g_res.output, sceneFormat);
     g_res.width = w;
     g_res.height = h;
     g_res.outputFormat = sceneFormat;
-    return g_res.objectsRtv && g_res.objectsSrv && g_res.mvUav && g_res.depthUav && g_res.output;
+    return g_res.objectsRtv && g_res.objectsSrv && g_res.mvUav && g_res.depthUav && g_res.output && g_res.colorUav;
 }
 
 // ---- Pipeline state tracking (on every context) ----
@@ -970,7 +1063,13 @@ static void BuildReprojection(float out[16])
         }
 }
 
-static void RunMotionVectorPass(ID3D11DeviceContext* c)
+// The GPU clips to the viewport rounded down to whole pixels (measured with a test program: any negative
+// TopLeft, even -0.05, leaves the last column/row of the target unrendered; positive ones up to 0.49
+// keep the first). So in frames with negative jitter the game's scene misses its right column and/or
+// bottom row: lighting leaves them a flat colour, which DLSS showed as a flickering line at the bottom
+// of the screen. A viewport can't move the image without that, so the motion vector pass reads the
+// missing edge's colour, depth and object motion from its neighbour (g_last).
+static void RunMotionVectorPass(ID3D11DeviceContext* c, float jx, float jy)
 {
     MotionVectorParams p = {};
     bool camera = g_execCameraValid && g_prevCameraValid && g_res.mainDepthSrv;
@@ -980,29 +1079,89 @@ static void RunMotionVectorPass(ID3D11DeviceContext* c)
     p.objectScale = 2 / VelocityScale;
     p.useCamera = camera ? 1.0f : 0.0f;
     p.useObjects = g_execVelocity ? 1.0f : 0.0f;
+    p.last[0] = (float)(g_res.width - (jx < 0 ? 2 : 1));
+    p.last[1] = (float)(g_res.height - (jy < 0 ? 2 : 1));
     D3D11_MAPPED_SUBRESOURCE m;
     if (SUCCEEDED(REAL(c, CtxMap, Map_t)(c, g_res.mvParams, 0, D3D11_MAP_WRITE_DISCARD, 0, &m)))
     {
         memcpy(m.pData, &p, sizeof(p));
         REAL(c, CtxUnmap, Unmap_t)(c, g_res.mvParams, 0);
     }
-    ID3D11ShaderResourceView* srvs[2] = { g_res.mainDepthSrv, g_res.objectsSrv };
-    ID3D11UnorderedAccessView* uavs[2] = { g_res.mvUav, g_res.depthUav };
+    static const UINT zero[4] = {};
+    c->ClearUnorderedAccessViewUint(g_res.statsUav, zero);
+    ID3D11ShaderResourceView* srvs[3] = { g_res.mainDepthSrv, g_res.objectsSrv, g_res.sceneSrv };
+    ID3D11UnorderedAccessView* uavs[4] = { g_res.mvUav, g_res.depthUav, g_res.colorUav, g_res.statsUav };
     c->CSSetShader(g_res.mvShader, NULL, 0);
-    c->CSSetShaderResources(0, 2, srvs);
-    c->CSSetUnorderedAccessViews(0, 2, uavs, NULL);
+    c->CSSetShaderResources(0, 3, srvs);
+    c->CSSetUnorderedAccessViews(0, 4, uavs, NULL);
     c->CSSetConstantBuffers(0, 1, &g_res.mvParams);
     REAL(c, CtxDispatch, Dispatch_t)(c, (g_res.width + 7) / 8, (g_res.height + 7) / 8, 1);
-    ID3D11ShaderResourceView* noSrvs[2] = {};
-    ID3D11UnorderedAccessView* noUavs[2] = {};
-    c->CSSetShaderResources(0, 2, noSrvs);
-    c->CSSetUnorderedAccessViews(0, 2, noUavs, NULL);
+    ID3D11ShaderResourceView* noSrvs[3] = {};
+    ID3D11UnorderedAccessView* noUavs[4] = {};
+    c->CSSetShaderResources(0, 3, noSrvs);
+    c->CSSetUnorderedAccessViews(0, 4, noUavs, NULL);
+}
+
+// Debugging (dlaa_dump = 1): black flashes were reported 2026-10-10 (a few frames, while talking to
+// NPCs; DLSS ran every frame) and haven't been seen since. This check logs any frame whose input had
+// NaN/infinite pixels, or whose output came out much darker than its input or invalid, so a flash too
+// short for a screenshot still shows up in the log, and saves a dump of the first one.
+static void MeasureOutput(ID3D11DeviceContext* c, int evaluation, bool reset)
+{
+    c->CSSetShader(g_res.statsShader, NULL, 0);
+    c->CSSetShaderResources(0, 1, &g_res.outputSrv);
+    c->CSSetUnorderedAccessViews(0, 1, &g_res.statsUav, NULL);
+    UINT samplesX = (g_res.width + StatsStep - 1) / StatsStep, samplesY = (g_res.height + StatsStep - 1) / StatsStep;
+    REAL(c, CtxDispatch, Dispatch_t)(c, (samplesX + 7) / 8, (samplesY + 7) / 8, 1);
+    ID3D11ShaderResourceView* noSrv = NULL;
+    ID3D11UnorderedAccessView* noUav = NULL;
+    c->CSSetShaderResources(0, 1, &noSrv);
+    c->CSSetUnorderedAccessViews(0, 1, &noUav, NULL);
+
+    int slot = g_statsNext++ % (int)_countof(g_statsReadback);
+    REAL(c, CtxCopyResource, CopyResource_t)(c, g_statsReadback[slot].buffer, g_res.stats);
+    g_statsReadback[slot].pending = true;
+    g_statsReadback[slot].evaluation = evaluation;
+    g_statsReadback[slot].reset = reset;
+}
+
+static void CheckStats(ID3D11DeviceContext* c)
+{
+    static int loggedInput, loggedDark;
+    static bool autoDumped;
+    double samples = (double)((g_res.width + StatsStep - 1) / StatsStep) * ((g_res.height + StatsStep - 1) / StatsStep);
+    for (int k = 1; k <= (int)_countof(g_statsReadback); k++) // oldest first
+    {
+        int slot = (g_statsNext + k - 1) % (int)_countof(g_statsReadback);
+        if (!g_statsReadback[slot].pending) continue;
+        D3D11_MAPPED_SUBRESOURCE m;
+        if (FAILED(REAL(c, CtxMap, Map_t)(c, g_statsReadback[slot].buffer, 0, D3D11_MAP_READ, D3D11_MAP_FLAG_DO_NOT_WAIT, &m))) continue;
+        UINT v[4];
+        memcpy(v, m.pData, sizeof(v));
+        REAL(c, CtxUnmap, Unmap_t)(c, g_statsReadback[slot].buffer, 0);
+        g_statsReadback[slot].pending = false;
+        double in = v[1] / (double)StatsScale / samples, out = v[2] / (double)StatsScale / samples;
+        bool broken = v[3] || (in > 0.01 && out < 0.3 * in);
+        bool report = broken ? loggedDark++ < 20 : (v[0] || (g_dump && g_statsReadback[slot].evaluation <= 3)) && loggedInput++ < 10;
+        if (report)
+            Log("DLAA: evaluation %d: brightness in %.4f, out %.4f%s; invalid: %u input pixels (replaced), %u of %.0f output samples%s.",
+                g_statsReadback[slot].evaluation, in, out, broken ? " (OUTPUT BROKEN)" : "", v[0], v[3], samples,
+                g_statsReadback[slot].reset ? "; reset" : "");
+        // The first broken output of a session also saves DLSS's inputs and output (two frames, ~500 MB in
+        // DS3DLAA\dump\; a short hitch), so the cause can be seen offline.
+        if (broken && !autoDumped && g_dumpAt < 0)
+        {
+            autoDumped = true;
+            g_dumpAt = g_evalCount + 1;
+            Log("DLAA: saving a dump of the next two evaluations.");
+        }
+    }
 }
 
 static NVSDK_NGX_Result EvaluateDlss(ID3D11DeviceContext* c, float jx, float jy, bool reset, float frameMs)
 {
     NVSDK_NGX_Parameter* p = g_ngxParams;
-    p->Set(NVSDK_NGX_Parameter_Color, (ID3D11Resource*)g_hdrScene);
+    p->Set(NVSDK_NGX_Parameter_Color, (ID3D11Resource*)g_res.color);
     p->Set(NVSDK_NGX_Parameter_Output, (ID3D11Resource*)g_res.output);
     p->Set(NVSDK_NGX_Parameter_Depth, (ID3D11Resource*)g_res.depth);
     p->Set(NVSDK_NGX_Parameter_MotionVectors, (ID3D11Resource*)g_res.mv);
@@ -1038,7 +1197,7 @@ static void Dump(ID3D11DeviceContext* c, const char* stage, float jx, float jy)
     if (strcmp(stage, "input") == 0)
     {
         swprintf_s(name, L"%d_color", g_evalCount);
-        WriteDds(c, (ID3D11Texture2D*)g_hdrScene, name);
+        WriteDds(c, g_res.color, name); // what DLSS gets: the scene, cleaned
         swprintf_s(name, L"%d_mv", g_evalCount);
         WriteDds(c, g_res.mv, name);
         swprintf_s(name, L"%d_depth", g_evalCount);
@@ -1120,6 +1279,20 @@ static void RunDlssInCleanState(ID3D11DeviceContext* c)
         if (SUCCEEDED(g_device->CreateShaderResourceView(g_mainDepth, &vd, &g_res.mainDepthSrv))) g_res.mainDepthSrvOf = g_mainDepth;
     }
     if (!g_res.mainDepthSrv) return;
+    if (g_res.sceneSrvOf != g_hdrScene)
+    {
+        // The view keeps the texture alive, so a new scene texture can't reuse the old one's address.
+        SafeRelease(g_res.sceneSrv);
+        g_res.sceneSrv = TypedSrv(g_hdrScene, sd.Format);
+        g_res.sceneSrvOf = g_hdrScene;
+        if (!g_res.sceneSrv)
+        {
+            g_dlssActive = false;
+            g_dlaa = false;
+            Log("DLAA: off (the HDR scene, format %d, can't be read by a shader).", (int)sd.Format);
+            return;
+        }
+    }
 
     LARGE_INTEGER now, freq;
     QueryPerformanceCounter(&now);
@@ -1127,10 +1300,17 @@ static void RunDlssInCleanState(ID3D11DeviceContext* c)
     float frameMs = g_lastEval.QuadPart ? (float)((now.QuadPart - g_lastEval.QuadPart) * 1000.0 / freq.QuadPart) : 8.33f;
     g_lastEval = now;
     bool reset = g_framesWithoutDlss > 1; // DLSS didn't run last frame (menu, loading screen): start over
+    static int restartsLogged;
+    if (g_dump && reset && g_evalCount > 0 && restartsLogged < 30)
+    {
+        restartsLogged++;
+        Log("DLAA: DLSS restarted after %d frame(s) without it.", g_framesWithoutDlss - 1);
+    }
     float jx = 0, jy = 0;
     if (g_execSceneFrame >= 0) JitterOf(g_execSceneFrame, &jx, &jy);
 
-    RunMotionVectorPass(c);
+    if (g_dump) CheckStats(c);
+    RunMotionVectorPass(c, jx, jy);
     if (g_dump && g_evalCount < 3) LogCentreDepth(c); // reads back from the GPU, so debugging only
     g_evalCount++;
     bool dump = g_dumpAt >= 0 && (g_evalCount == g_dumpAt || g_evalCount == g_dumpAt + 1);
@@ -1139,6 +1319,7 @@ static void RunDlssInCleanState(ID3D11DeviceContext* c)
     if (!NVSDK_NGX_FAILED(r))
     {
         REAL(c, CtxCopyResource, CopyResource_t)(c, g_hdrScene, g_res.output);
+        if (g_dump) MeasureOutput(c, g_evalCount, reset);
         if (dump) Dump(c, "output", jx, jy);
         if (dump && g_evalCount == g_dumpAt + 1)
         {
@@ -1829,6 +2010,20 @@ void DlaaOnPresent(IDXGISwapChain* swapChain)
             CreateSceneResources(g_width, g_height, DXGI_FORMAT_R16G16B16A16_FLOAT);
 
         if (g_dump && (GetAsyncKeyState(VK_F10) & 1) && g_dumpAt < 0) g_dumpAt = g_evalCount + 2;
+
+        // A scene drawn (with jitter) but not passed through DLSS shows the jitter as shaking. Logged
+        // (dlaa_dump = 1) to find such frames (e.g. a post effects path that doesn't read the scene the usual way).
+        // One line per gap (its first frame); "DLSS restarted after N frame(s)" closes it. Warps give ~250
+        // frames ("seen, never read": the loading fade); single frames ("not seen") come every ~20 s.
+        static LONG lastSceneFrame;
+        static int skipsLogged;
+        LONG sceneFrame = g_sceneFrame;
+        if (g_dump && g_dlssActive && g_evalCount > 0 && sceneFrame != lastSceneFrame && g_framesWithoutDlss == 1 && skipsLogged < 30)
+        {
+            skipsLogged++;
+            Log("DLAA: a scene was drawn without DLSS (scene copy %s).", g_dlssPending ? "seen, never read" : "not seen");
+        }
+        lastSceneFrame = sceneFrame;
 
         // Frame bookkeeping: the camera becomes last frame's; nothing executed yet for the next one.
         if (g_execCameraValid)

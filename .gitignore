@@ -1,0 +1,21 @@
+# Build output and binaries
+bin/
+obj/
+*.exe
+*.dll
+*.lib
+*.obj
+*.exp
+*.pdb
+*.ilk
+*.download
+
+# Downloaded by mousefix\get_deps.ps1 (NVIDIA's license doesn't allow redistributing the SDK headers)
+mousefix/third_party/ngx/include/
+mousefix/third_party/ngx/LICENSE.txt
+
+# Local files
+__pycache__/
+.claude/
+*.log
+texture_dump/

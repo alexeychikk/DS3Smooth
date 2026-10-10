@@ -1,0 +1,6 @@
+NVIDIA DLSS SDK headers (include/*.h) and LICENSE.txt only, no binaries.
+From https://github.com/NVIDIA/DLSS at commit 374959484e79a640feaba44c93ac8cfb0a03f5b5 (2026-09-08).
+Not in the repository (the SDK license allows distributing it only inside compiled programs): get_deps.ps1
+downloads them at build time and checks each file's SHA-256.
+The DLSS runtime used at run time is the one installed by the NVIDIA driver (_nvngx.dll in the driver store
+and nvngx_dlss.dll from C:\ProgramData\NVIDIA\NGX\models), both signed.

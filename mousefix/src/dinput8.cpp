@@ -40,7 +40,7 @@
 #include "../third_party/dearxan/include/dearxan.h"
 #pragma warning(pop)
 
-// ---- Settings (DS3MouseFix.ini next to the DLL) ----
+// ---- Settings (section [DS3Smooth] of DS3Smooth.ini next to the DLL, shared with DS3Smooth.exe) ----
 
 static int g_intervalMs = 8; // minimum time between mouse messages passed to the game, 0 = off
 static bool g_keyboardIcons = true; // replace the textures found in the DS3KeyIcons folder
@@ -784,7 +784,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     wchar_t* slash = wcsrchr(g_dllDir, L'\\');
     if (slash) slash[1] = 0;
     wchar_t ini[MAX_PATH];
-    swprintf_s(ini, L"%sDS3MouseFix.ini", g_dllDir);
+    swprintf_s(ini, L"%sDS3Smooth.ini", g_dllDir);
 
     // The log is appended to on every launch; start over once it passes 1 MB.
     wchar_t logPath[MAX_PATH];
@@ -792,18 +792,18 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
     WIN32_FILE_ATTRIBUTE_DATA logInfo;
     if (GetFileAttributesExW(logPath, GetFileExInfoStandard, &logInfo) && (logInfo.nFileSizeHigh || logInfo.nFileSizeLow > (1 << 20)))
         DeleteFileW(logPath);
-    g_intervalMs = GetPrivateProfileIntW(L"DS3MouseFix", L"interval_ms", 8, ini);
+    g_intervalMs = GetPrivateProfileIntW(L"DS3Smooth",L"interval_ms", 8, ini);
     if (g_intervalMs < 0) g_intervalMs = 0;
     if (g_intervalMs > 50) g_intervalMs = 50;
-    g_keyboardIcons = GetPrivateProfileIntW(L"DS3MouseFix", L"keyboard_icons", 1, ini) != 0;
-    g_dumpTextures = GetPrivateProfileIntW(L"DS3MouseFix", L"dump_textures", 0, ini) != 0;
-    g_stallTrace = GetPrivateProfileIntW(L"DS3MouseFix", L"stall_trace", 0, ini) != 0;
+    g_keyboardIcons = GetPrivateProfileIntW(L"DS3Smooth",L"keyboard_icons", 1, ini) != 0;
+    g_dumpTextures = GetPrivateProfileIntW(L"DS3Smooth",L"dump_textures", 0, ini) != 0;
+    g_stallTrace = GetPrivateProfileIntW(L"DS3Smooth",L"stall_trace", 0, ini) != 0;
     DlaaLoadSettings(ini);
     // The developer settings exist to write to the log, so they turn it on too.
-    g_log = GetPrivateProfileIntW(L"DS3MouseFix", L"log", 0, ini) != 0 || g_dumpTextures || g_stallTrace || DlaaDebug();
+    g_log = GetPrivateProfileIntW(L"DS3Smooth",L"log", 0, ini) != 0 || g_dumpTextures || g_stallTrace || DlaaDebug();
 
     // Must run before the game's entry point; dearxan hooks it and reports back through the callback.
-    if (GetPrivateProfileIntW(L"DS3MouseFix", L"disable_arxan", 1, ini) != 0)
+    if (GetPrivateProfileIntW(L"DS3Smooth",L"disable_arxan", 1, ini) != 0)
     {
         dearxan::detail::dearxan_neuter_arxan([](const dearxan::detail::DearxanResult* r, void*) {
             if (r->status == dearxan::detail::DearxanSuccess)
@@ -813,7 +813,7 @@ BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
         }, NULL);
     }
 
-    if (GetPrivateProfileIntW(L"DS3MouseFix", L"no_camera_auto_follow", 1, ini) != 0) DisableCameraAutoFollow();
+    if (GetPrivateProfileIntW(L"DS3Smooth",L"no_camera_auto_follow", 1, ini) != 0) DisableCameraAutoFollow();
 
     if (g_stallTrace || DlaaEnabled())
     {

@@ -29,7 +29,9 @@ if errorlevel 1 (
     exit /b 1
 )
 
-copy /y DS3MouseFix.ini bin\ >nul
+rem The one settings file for both parts; DS3Smooth.exe reads it from the game folder too.
+copy /y ..\DS3Smooth.ini bin\ >nul
+if exist bin\DS3MouseFix.ini del bin\DS3MouseFix.ini
 
 rem Keyboard icons: needs Python with Pillow, and ..\tools\texconv.exe.
 python ..\keyicons\make_icons.py bin\DS3KeyIcons
@@ -43,5 +45,5 @@ powershell -NoProfile -ExecutionPolicy Bypass -File copy_dlss.ps1
 if errorlevel 1 echo DLAA will not work without it; everything else does.
 
 echo.
-echo Done: bin\dinput8.dll, bin\DS3MouseFix.ini, bin\DS3KeyIcons\ and bin\DS3DLAA\
+echo Done: bin\dinput8.dll, bin\DS3Smooth.ini, bin\DS3KeyIcons\ and bin\DS3DLAA\
 echo Copy them into the game folder, next to DarkSoulsIII.exe.

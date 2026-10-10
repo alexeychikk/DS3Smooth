@@ -57,10 +57,10 @@ wchar_t g_dlaaDir[MAX_PATH];
 
 void DlaaLoadSettings(const wchar_t* ini)
 {
-    g_dlaa = GetPrivateProfileIntW(L"DS3MouseFix", L"dlaa", 1, ini) != 0;
-    g_capture = GetPrivateProfileIntW(L"DS3MouseFix", L"dlaa_capture", 0, ini) != 0;
-    g_dump = GetPrivateProfileIntW(L"DS3MouseFix", L"dlaa_dump", 0, ini) != 0;
-    g_jitterSign = GetPrivateProfileIntW(L"DS3MouseFix", L"dlaa_jitter_flip", 0, ini) ? -1.0f : 1.0f;
+    g_dlaa = GetPrivateProfileIntW(L"DS3Smooth",L"dlaa", 1, ini) != 0;
+    g_capture = GetPrivateProfileIntW(L"DS3Smooth",L"dlaa_capture", 0, ini) != 0;
+    g_dump = GetPrivateProfileIntW(L"DS3Smooth",L"dlaa_dump", 0, ini) != 0;
+    g_jitterSign = GetPrivateProfileIntW(L"DS3Smooth",L"dlaa_jitter_flip", 0, ini) ? -1.0f : 1.0f;
     swprintf_s(g_dlaaDir, L"%sDS3DLAA\\", g_dllDir);
     CreateDirectoryW(g_dlaaDir, NULL);
     if (g_capture)

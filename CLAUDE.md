@@ -29,13 +29,17 @@ used**, so the user can start the game and try it straight away. Don't stop at "
 | --- | --- | --- |
 | Both | `build.bat` (root) builds DS3Smooth, then calls `mousefix\build.bat` | as below |
 | DS3Smooth | `build.bat` → `bin\DS3Smooth.exe` | Stays in `bin\`; the user starts it with `Play DS3.bat` (project root), which starts it minimized and then launches the game through Steam (`steam://rungameid/374320`) |
-| DS3MouseFix | `mousefix\build.bat` → `mousefix\bin\dinput8.dll` + `mousefix\bin\DS3KeyIcons\*.dds` | `F:\SteamLibrary\steamapps\common\DARK SOULS III\Game\` (next to `DarkSoulsIII.exe`); the icons go in `Game\DS3KeyIcons\`, replacing the old ones |
+| DS3MouseFix | `mousefix\build.bat` → `mousefix\bin\dinput8.dll` + `mousefix\bin\DS3KeyIcons\*.dds` (+ a copy of `DS3Smooth.ini`) | `F:\SteamLibrary\steamapps\common\DARK SOULS III\Game\` (next to `DarkSoulsIII.exe`); the icons go in `Game\DS3KeyIcons\`, replacing the old ones |
 
-- **Never overwrite the user's ini files.** `bin\DS3Smooth.ini` and the game folder's
-  `DS3MouseFix.ini` hold their own settings (e.g. `fps = 120`, not the default 144). When you add a
-  setting, add the new key and comment to the installed ini and leave the existing values alone.
-  Also update the template ini in the repo (`DS3Smooth.ini`, `mousefix\DS3MouseFix.ini`) and, for
-  DS3Smooth, the defaults written by `LoadConfig()` in `Program.cs`.
+- **One settings file for both parts** (since 2026-10-11): `DS3Smooth.ini`, section `[DS3Smooth]`, in
+  the game folder. The DLL reads it next to itself; DS3Smooth.exe reads it from the game's folder once
+  it has found the game (defaults in `Program.cs` if it's missing; it no longer writes one). Grouped:
+  features (1/0) first, then values (`fps`, `interval_ms`), then troubleshooting/developer settings.
+  The template is `DS3Smooth.ini` in the repo root.
+- **Never overwrite the user's ini.** The game folder's `DS3Smooth.ini` holds their own settings (e.g.
+  `fps = 120`, `dlaa = 0`, not the defaults). When you add a setting, add the new key and comment to
+  the installed ini in its group and leave the existing values alone. Also update the template and the
+  matching default in code (`Program.cs` fields, or the `GetPrivateProfileIntW` default in the DLL).
 - The DLL can't be replaced while the game is running (the file is locked). Check for a
   `DarkSoulsIII` process first; if it's running, tell the user to close the game, not kill it.
 - In your summary, say what was installed where.
@@ -65,8 +69,9 @@ used**, so the user can start the game and try it straight away. Don't stop at "
 Waits for `DarkSoulsIII.exe`, reads its FileVersion, picks static offsets from the `Versions`
 table (1.3.2 to 1.15.2; the keys are version prefixes like `"1.15.2."`), then opens the process and
 loops: sprint values every 16 ms, everything else every 0.5 s, writing only when the game has reset
-a value. It exits when the game exits. Settings come from `DS3Smooth.ini` next to the exe (keys
-`fps`, `stutter_fix`, `sprint_fix`, `no_logo`, `borderless`); it's created with defaults if missing.
+a value. It exits when the game exits. Settings (keys `fps`, `stutter_fix`, `sprint_fix`, `no_logo`,
+`borderless`) come from the game folder's `DS3Smooth.ini`, read after the game is found (its path comes
+from the process's main module); other keys there are the DLL's and are ignored.
 
 - **FPS unlock:** the debug frame limiter: `[SprjFlipper] + 0x354` float cap, `+0x358` byte = 1.
   Same method as DS3DebugFPS. `fps` is clamped to 30–1000; 0 = off.
@@ -90,7 +95,7 @@ Offsets and the No Logo patch come from SilkySouls3; the sprint fix comes from D
 ## DS3MouseFix (`mousefix/src/dinput8.cpp`)
 
 Proxy `dinput8.dll`: forwards `DirectInput8Create` (the game's only dinput8 import) to the System32
-DLL. Settings come from `DS3MouseFix.ini`, section `[DS3MouseFix]`. A setup thread subclasses the
+DLL. Settings come from `DS3Smooth.ini` next to it, section `[DS3Smooth]`. A setup thread subclasses the
 game window, re-checking every 2 s in case the game recreates it. `DS3MouseFix.log` is written only
 with `log = 1` (default 0, added 2026-10-10) or any developer setting (`dump_textures`, `stall_trace`,
 `dlaa_capture`, `dlaa_dump`); with those off no debugging code runs per frame (the stall tracer's

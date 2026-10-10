@@ -2,7 +2,7 @@
 #
 # DS3 on PC only has gamepad icons. Each one is a separate 32x32 BC7 texture; DS3MouseFix
 # (dinput8.dll) recognises the original by a hash of its pixels and creates ours instead. The hashes
-# below were found by dumping the textures the game creates (dump_textures = 1 in DS3MouseFix.ini).
+# below were found by dumping the textures the game creates (dump_textures = 1 in DS3Smooth.ini).
 #
 #   python make_icons.py <out dir>        (needs Pillow, and ..\tools\texconv.exe for BC7)
 #

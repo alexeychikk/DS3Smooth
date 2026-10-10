@@ -12,6 +12,7 @@
 //   4. Sprint fix: the game's "am I stuck?" running check and its slowdown/recovery
 //      rates are tuned for 60 FPS, which makes sprinting slower above ~82 FPS. Those three
 //      constants are redirected to values recalculated from the real frame time.
+// Settings come from DS3Smooth.ini in the game folder, the one file shared with dinput8.dll.
 //
 // Written in C# 5 on purpose so it compiles with the csc.exe that ships with Windows 11
 // (.NET Framework 4.x). No SDK, NuGet or Visual Studio needed.
@@ -214,21 +215,6 @@ internal static class Program
         Console.WriteLine("Based on SilkySouls3 (MIT) and DS3DebugFPS (Apache-2.0). Use offline.");
         Console.WriteLine();
 
-        LoadConfig();
-        Console.WriteLine("FPS cap:     " + (_fps > 0 ? _fps.ToString("0.##", CultureInfo.InvariantCulture) : "off (game default)"));
-        Console.WriteLine("Stutter fix: " + (_stutterFix ? "on" : "off"));
-        Console.WriteLine("Sprint fix:  " + (!_sprintFix ? "off" : _fps > 0 ? "on" : "off (only needed with an FPS cap)"));
-        Console.WriteLine("No Logo:     " + (_noLogo ? "on" : "off"));
-        Console.WriteLine("Borderless:  " + (_borderless ? "on (set the game to Windowed mode)" : "off"));
-        Console.WriteLine();
-        if (_fps <= 0) _sprintFix = false;
-
-        if (_fps <= 0 && !_stutterFix && !_noLogo && !_borderless)
-        {
-            Console.WriteLine("All features are off in DS3Smooth.ini, nothing to do.");
-            return Pause(0);
-        }
-
         Process game = WaitForGame();
         try
         {
@@ -252,7 +238,7 @@ internal static class Program
             if (!announced)
             {
                 Console.WriteLine("Waiting for Dark Souls III to start...");
-                if (_noLogo) Console.WriteLine("(For No Logo to work, keep this open and start the game now.)");
+                Console.WriteLine("(For No Logo to work, keep this open and start the game now.)");
                 announced = true;
             }
             Thread.Sleep(250);
@@ -263,6 +249,7 @@ internal static class Program
     {
         // The module list is not readable for the first moments after launch, so retry.
         string version = null;
+        string gameDir = null;
         long moduleBase = 0;
         long moduleSize = 0;
         for (int attempt = 0; attempt < 60 && !HasExited(game); attempt++)
@@ -271,9 +258,10 @@ internal static class Program
             {
                 ProcessModule main = game.MainModule;
                 version = main.FileVersionInfo.FileVersion;
+                gameDir = Path.GetDirectoryName(main.FileName);
                 moduleBase = main.BaseAddress.ToInt64();
                 moduleSize = main.ModuleMemorySize;
-                if (version != null && moduleBase != 0 && moduleSize != 0) break;
+                if (version != null && gameDir != null && moduleBase != 0 && moduleSize != 0) break;
             }
             catch (Exception)
             {
@@ -283,10 +271,28 @@ internal static class Program
         }
 
         if (HasExited(game)) { Console.WriteLine("Game closed."); return 0; }
-        if (version == null || moduleBase == 0)
+        if (version == null || gameDir == null || moduleBase == 0)
         {
             Console.WriteLine("Could not read the game's version. Try running DS3Smooth as administrator.");
             return Pause(1);
+        }
+
+        // The settings live in the game folder, in the same file as dinput8.dll's, so they are read
+        // only now that the game (and so its folder) is known. No Logo is applied 2 s after start,
+        // long after this.
+        LoadConfig(gameDir);
+        Console.WriteLine("FPS cap:     " + (_fps > 0 ? _fps.ToString("0.##", CultureInfo.InvariantCulture) : "off (game default)"));
+        Console.WriteLine("Stutter fix: " + (_stutterFix ? "on" : "off"));
+        Console.WriteLine("Sprint fix:  " + (!_sprintFix ? "off" : _fps > 0 ? "on" : "off (only needed with an FPS cap)"));
+        Console.WriteLine("No Logo:     " + (_noLogo ? "on" : "off"));
+        Console.WriteLine("Borderless:  " + (_borderless ? "on (set the game to Windowed mode)" : "off"));
+        Console.WriteLine();
+        if (_fps <= 0) _sprintFix = false;
+
+        if (_fps <= 0 && !_stutterFix && !_noLogo && !_borderless)
+        {
+            Console.WriteLine("All DS3Smooth features are off in DS3Smooth.ini, nothing to do.");
+            return Pause(0);
         }
 
         GameOffsets offsets = FindOffsets(version);
@@ -690,26 +696,16 @@ internal static class Program
                && written.ToInt64() == data.Length;
     }
 
-    // ---- Config (DS3Smooth.ini next to the exe) ----
+    // ---- Config (DS3Smooth.ini in the game folder, shared with dinput8.dll) ----
 
-    private static void LoadConfig()
+    // The file is installed with dinput8.dll (from mousefix\bin\); without it the defaults above apply.
+    // dinput8.dll's keys and the [DS3Smooth] section line are ignored here.
+    private static void LoadConfig(string gameDir)
     {
-        string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "DS3Smooth.ini");
+        string path = Path.Combine(gameDir, "DS3Smooth.ini");
         if (!File.Exists(path))
         {
-            File.WriteAllText(path,
-                "; DS3Smooth settings\r\n" +
-                "; FPS cap. 0 = leave the game's frame rate alone.\r\n" +
-                "fps = 144\r\n" +
-                "; 1 = fix the freeze when a USB device is (dis)connected, 0 = off\r\n" +
-                "stutter_fix = 1\r\n" +
-                "; 1 = fix slow sprinting at high FPS (needs an FPS cap), 0 = off\r\n" +
-                "sprint_fix = 1\r\n" +
-                "; 1 = skip the startup logo screens (start DS3Smooth before the game), 0 = off\r\n" +
-                "no_logo = 1\r\n" +
-                "; 1 = borderless window covering the monitor (set the game to Windowed mode), 0 = off\r\n" +
-                "borderless = 1\r\n");
-            Console.WriteLine("Created DS3Smooth.ini with default settings.");
+            Console.WriteLine("No DS3Smooth.ini in the game folder, using the default settings.");
             return;
         }
 

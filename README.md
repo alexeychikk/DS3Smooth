@@ -30,16 +30,14 @@ There is no ready-made download; build it first (see [Building](#building), it's
    - **Motion Blur: ON.** Needed for DLAA, which removes the blur itself.
 3. Start the game with **`Play DS3.bat`**.
 
-To uninstall, delete `dinput8.dll`, `DS3MouseFix.ini` and the `DS3KeyIcons` and `DS3DLAA` folders
+To uninstall, delete `dinput8.dll`, `DS3Smooth.ini` and the `DS3KeyIcons` and `DS3DLAA` folders
 from the game folder.
 
 ## Settings
 
-Two settings files; each option is explained inside, and `0` turns it off.
-
-- `bin\DS3Smooth.ini`: frame rate cap, sprint fix, logo skip, borderless window, USB freeze fix.
-- `DS3MouseFix.ini` in the game folder: DLAA, keyboard icons, steady camera, menu mouse fix,
-  stutter fix.
+All settings are in `DS3Smooth.ini` in the game folder; each option is explained inside, and `0`
+turns it off. The features come first, then the numbers (frame rate cap, menu mouse fix), then
+troubleshooting options that normally stay off. Changes apply the next time you start the game.
 
 The keyboard icons match one particular key layout (set in `keyicons\make_icons.py`).
 
@@ -50,7 +48,7 @@ The keyboard icons match one particular key layout (set in `keyicons\make_icons.
 - RTSS works alongside; set `fps` at or above the RTSS limit.
 - At 4K the game window covers the small DS3Smooth window, so it may look like it closed.
 - Windows Defender may warn about `DS3Smooth.exe`, because it changes another program's memory.
-- Something not working (no DLAA, no icons)? Set `log = 1` in `DS3MouseFix.ini`; the game folder's
+- Something not working (no DLAA, no icons)? Set `log = 1` in `DS3Smooth.ini`; the game folder's
   `DS3MouseFix.log` then says what was loaded and what failed.
 - It doesn't change gameplay, but any mod carries some risk online. Use at your own risk.
 

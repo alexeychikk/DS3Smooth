@@ -19,7 +19,6 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if not exist bin\DS3Smooth.ini copy /y DS3Smooth.ini bin\ >nul
 echo Done: bin\DS3Smooth.exe
 echo.
 
